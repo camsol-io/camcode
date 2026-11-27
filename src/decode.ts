@@ -1,7 +1,26 @@
 import { prepareZXingModule, readBarcodes, type ReaderOptions } from 'zxing-wasm/reader';
 import type { Point, RGBAImage } from './image.js';
 
-export type CodeFormat = 'QR_CODE' | 'DATA_MATRIX';
+// 2D codes and 1D barcodes zxing-cpp reads. Names follow ZXing's BarcodeFormat.
+export type CodeFormat =
+  | 'QR_CODE'
+  | 'DATA_MATRIX'
+  | 'AZTEC'
+  | 'PDF_417'
+  | 'CODE_128'
+  | 'CODE_39'
+  | 'CODE_93'
+  | 'CODABAR'
+  | 'EAN_13'
+  | 'EAN_8'
+  | 'UPC_A'
+  | 'UPC_E'
+  | 'ITF'
+  | 'DATABAR'
+  | 'DATABAR_EXPANDED';
+
+// What scan() reads when no formats are given.
+export const DEFAULT_FORMATS: CodeFormat[] = ['QR_CODE', 'DATA_MATRIX'];
 
 export interface Decoded {
   text: string;
@@ -33,8 +52,29 @@ export interface DecodeOptions {
   pure?: boolean;
 }
 
-const names: Record<CodeFormat, 'QRCode' | 'DataMatrix'> = { QR_CODE: 'QRCode', DATA_MATRIX: 'DataMatrix' };
-const formatOf: Record<string, CodeFormat> = { QRCode: 'QR_CODE', DataMatrix: 'DATA_MATRIX' };
+const names: Record<CodeFormat, string> = {
+  QR_CODE: 'QRCode',
+  DATA_MATRIX: 'DataMatrix',
+  AZTEC: 'Aztec',
+  PDF_417: 'PDF417',
+  CODE_128: 'Code128',
+  CODE_39: 'Code39',
+  CODE_93: 'Code93',
+  CODABAR: 'Codabar',
+  EAN_13: 'EAN-13',
+  EAN_8: 'EAN-8',
+  UPC_A: 'UPC-A',
+  UPC_E: 'UPC-E',
+  ITF: 'ITF',
+  DATABAR: 'DataBar',
+  DATABAR_EXPANDED: 'DataBarExp',
+};
+// zxing-cpp reports formats in its own spelling ('EAN-13', 'DataBarExp', 'QRCode', ...): compare letters and digits only
+const key = (name: string) => name.replace(/[^a-z0-9]/gi, '').toLowerCase();
+const formatOf: Record<string, CodeFormat> = Object.fromEntries((Object.entries(names) as [CodeFormat, string][]).map(([f, n]) => [key(n), f]));
+formatOf[key('DataBarOmni')] = 'DATABAR';
+
+export const ALL_FORMATS = Object.keys(names) as CodeFormat[];
 
 export interface PrepareOptions {
   // URL of zxing_reader.wasm (from the zxing-wasm package, dist/reader/) as your app serves it
@@ -58,7 +98,7 @@ export async function prepare(options: PrepareOptions = {}): Promise<void> {
 // One zxing-cpp read of one view. zxing-cpp finds every code in the view in one call.
 export async function decode(image: RGBAImage, options: DecodeOptions = {}): Promise<Decoded[]> {
   const readerOptions: ReaderOptions = {
-    formats: (options.formats ?? ['QR_CODE', 'DATA_MATRIX']).map((f) => names[f]),
+    formats: (options.formats ?? DEFAULT_FORMATS).map((f) => names[f]) as ReaderOptions['formats'],
     textMode: 'Plain',
     tryHarder: true,
     tryRotate: true,
@@ -73,14 +113,16 @@ export async function decode(image: RGBAImage, options: DecodeOptions = {}): Pro
   const found = await readBarcodes(imageData, readerOptions);
   const out: Decoded[] = [];
   for (const r of found) {
-    const format = formatOf[r.format];
+    const format = formatOf[key(String(r.format))];
     if (!format || (!r.isValid && !options.located)) {
       continue;
     }
     const p = r.position;
     const points = [p.topLeft, p.topRight, p.bottomRight, p.bottomLeft].map((q) => ({ x: q.x, y: q.y }));
     if (r.isValid) {
-      out.push({ text: r.text, format, points });
+      // zxing-cpp gives UPC-A in its EAN-13 form (a leading 0); the UPC-A text has 12 digits
+      const text = format === 'UPC_A' && /^0\d{12}$/.test(r.text) ? r.text.slice(1) : r.text;
+      out.push({ text, format, points });
     } else {
       const s = r.symbol;
       const symbol = Array.from({ length: s.height }, (_, y) => Uint8Array.from({ length: s.width }, (_, x) => (s.data[y * s.width + x] ? 0 : 1)));

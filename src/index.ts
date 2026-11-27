@@ -1,9 +1,10 @@
 import { Box, GrayImage, Point, binarize, boundsOf, clahe, clearEdgeBands, crop, fillHighlights, fillHoles, flatField, fromRotated, gamma, grayFromRGBA, isRGBA, normalize, openDark, removeThinLines, rotate, scale, shrink, tiles, toRGBA } from './image.js';
-import { CodeFormat, DecodeOptions, decode } from './decode.js';
+import { CodeFormat, DEFAULT_FORMATS, DecodeOptions, decode as decodeAll } from './decode.js';
 import { gridRepair } from './grid.js';
 import { gridQR, refitQR } from './refit.js';
 
 export type { CodeFormat } from './decode.js';
+export { ALL_FORMATS, DEFAULT_FORMATS } from './decode.js';
 export type { GrayImage, Point } from './image.js';
 export { grayFromRGBA } from './image.js';
 export { prepare } from './decode.js';
@@ -26,6 +27,9 @@ export interface ScanOptions {
   isValid?: (text: string, format: CodeFormat) => boolean;
   // no new pass starts after this many milliseconds; a pass that has started runs to its end
   budgetMs?: number;
+  // the code formats to read; default QR_CODE and DATA_MATRIX (DEFAULT_FORMATS). Every extra format costs time and
+  // adds a chance of false reads, so list only what you expect.
+  formats?: CodeFormat[];
 }
 
 export interface ScanOutput {
@@ -40,7 +44,8 @@ interface View {
   toImage: (point: Point) => Point;
 }
 
-const other: Record<CodeFormat, CodeFormat> = { QR_CODE: 'DATA_MATRIX', DATA_MATRIX: 'QR_CODE' };
+// Partner formats on one label: a QR code and a Data Matrix code with the same text.
+const other: Partial<Record<CodeFormat, CodeFormat>> = { QR_CODE: 'DATA_MATRIX', DATA_MATRIX: 'QR_CODE' };
 
 // Large photos are read first at a reduced size with a shorter side of at least this many pixels: 1/2 for a
 // 1772 px photo, 1/3 for a 12-megapixel one. A label photographed with a phone fills enough of the photo that the reduced view
@@ -68,6 +73,14 @@ export async function scan(image: GrayImage, options: ScanOptions = {}): Promise
   const timeLeft = () => elapsed() < budget;
   // zxing-cpp can stop at its first code, but only when every code is acceptable
   const one = mode === 'first' && !options.isValid;
+  // Every pass reads through `decode`, which keeps to the formats asked for. A pass that looks for one format
+  // (the partner pass) reads nothing when that format was not asked for. The QR repair passes run only for QR codes.
+  const formats = options.formats?.length ? options.formats : DEFAULT_FORMATS;
+  const qr = formats.includes('QR_CODE');
+  const decode: typeof decodeAll = async (image, o = {}) => {
+    const wanted = o.formats ? o.formats.filter((f) => formats.includes(f)) : formats;
+    return wanted.length ? decodeAll(image, { ...o, formats: wanted }) : [];
+  };
 
   let grayImage: GrayImage | null = isRGBA(image) ? null : image;
   const gray = () => (grayImage ??= grayFromRGBA(image.data, image.width, image.height));
@@ -105,12 +118,13 @@ export async function scan(image: GrayImage, options: ScanOptions = {}): Promise
       return;
     }
     for (const found of [...results]) {
-      if (!timeLeft() || tried.has(found) || hasPartner(results, found)) {
+      const partner = other[found.format];
+      if (!partner || !timeLeft() || tried.has(found) || hasPartner(results, found)) {
         continue;
       }
       tried.add(found);
       const box = boundsOf(found.points, 1, image);
-      await read(window(gray(), box, 900), 'partner', { formats: [other[found.format]], denoise: true });
+      await read(window(gray(), box, 900), 'partner', { formats: [partner], denoise: true });
     }
   };
 
@@ -285,7 +299,7 @@ export async function scan(image: GrayImage, options: ScanOptions = {}): Promise
   // 7. Grid repair, the last resort when every pass found nothing: QR codes whose finder patterns zxing-cpp cannot
   // use (spread ink, a printed line or a bridge on a finder) although the data is within error correction. Own
   // tolerant finder search on the reduced view, grid fit, function patterns reset, clean redraw for zxing-cpp.
-  if (results.length === 0 && timeLeft()) {
+  if (qr && results.length === 0 && timeLeft()) {
     const found = await gridRepair(base());
     if (found && isValid(found.text, 'QR_CODE')) {
       results.push({ text: found.text, format: 'QR_CODE', points: found.points.map((p) => ({ x: p.x * factor, y: p.y * factor })), pass: 'grid-repair', elapsedMs: elapsed() });

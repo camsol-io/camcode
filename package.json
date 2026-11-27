@@ -1,7 +1,7 @@
 {
   "name": "@camsol.io/camcode",
-  "version": "0.1.0",
-  "description": "Fast QR code and Data Matrix reader for the browser and Node, built on zxing-cpp (WebAssembly), with a camera scanner",
+  "version": "0.2.0",
+  "description": "Fast QR code, Data Matrix and barcode reader for the browser and Node, built on zxing-cpp (WebAssembly), with a camera scanner",
   "keywords": [
     "qr",
     "qrcode",
@@ -10,7 +10,9 @@
     "scanner",
     "camera",
     "zxing",
-    "wasm"
+    "wasm",
+    "ean",
+    "code128"
   ],
   "license": "MIT",
   "author": "Camsol Services GmbH",

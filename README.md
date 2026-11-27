@@ -1,6 +1,6 @@
 # @camsol.io/camcode
 
-Reads QR codes and Data Matrix codes from photos and camera streams, in the browser and in Node.
+Reads QR codes, Data Matrix codes and, when you ask for them, other 2D codes and 1D barcodes from photos and camera streams, in the browser and in Node.
 
 camcode uses [zxing-cpp](https://github.com/zxing-cpp/zxing-cpp) through [zxing-wasm](https://github.com/Sec-ant/zxing-wasm) for decoding. Around it, camcode decides which views of the image to decode and in which order: first a small view, then the full image, then views for hard cases (blur, glare, low contrast, damaged finder patterns, odd angles). It stops as soon as it has what you asked for.
 
@@ -19,7 +19,7 @@ const { data, width, height } = context.getImageData(0, 0, canvas.width, canvas.
 const out = await scan({ data, width, height }, { mode: 'first' });
 
 for (const code of out.results) {
-  console.log(code.format, code.text); // 'QR_CODE' | 'DATA_MATRIX', the decoded text
+  console.log(code.format, code.text); // for example 'QR_CODE', and the decoded text
 }
 ```
 
@@ -28,7 +28,26 @@ for (const code of out.results) {
 - `image` is `{ data, width, height }`. `data` holds 4 bytes per pixel (RGBA, as `getImageData` returns it) or 1 byte per pixel (gray). The image is not changed.
 - `mode`: `'first'` (default) stops at the first valid code. `'all'` looks for every code in the image.
 - `isValid(text, format)`: skip codes that fail your check, for example a URL pattern.
+- `formats`: the code formats to read (see below). Default `['QR_CODE', 'DATA_MATRIX']`.
 - `budgetMs`: no new pass starts after this many milliseconds. Without it, an image without a readable code runs every pass, which can take a second or more on a large photo.
+
+## Formats
+
+By default camcode reads QR codes and Data Matrix codes. Pass `formats` to read others:
+
+```js
+import { scan, ALL_FORMATS } from '@camsol.io/camcode';
+
+await scan(image, { formats: ['QR_CODE', 'CODE_128', 'EAN_13'] });
+await scan(image, { formats: ALL_FORMATS }); // everything below
+```
+
+| Kind | Formats |
+|---|---|
+| 2D codes | `QR_CODE`, `DATA_MATRIX`, `AZTEC`, `PDF_417` |
+| 1D barcodes | `CODE_128`, `CODE_39`, `CODE_93`, `CODABAR`, `EAN_13`, `EAN_8`, `UPC_A`, `UPC_E`, `ITF`, `DATABAR`, `DATABAR_EXPANDED` |
+
+List only the formats you expect: each one costs a little time per image and adds a small chance of a false read. The extra passes for hard cases (contrast, rotation, tiles) work for every format; the repair passes for damaged finder patterns work for QR codes only. UPC-A is returned with 12 digits.
 
 Each result has `text`, `format`, `points` (the four corners: top-left, top-right, bottom-right, bottom-left, in image pixels), `pass` (which view found it) and `elapsedMs` (time from the start of the scan until it was found).
 
@@ -53,7 +72,7 @@ scanner.stop();
 
 - `start` opens the back camera (`facingMode: 'environment'`) unless you pass a `deviceId` or full `constraints`. It throws when the camera cannot be opened.
 - `CameraScanner.listCameras()` lists the cameras. Browsers fill in the labels only after the user has allowed camera access once.
-- Options: `budgetMs` per frame (default 100), `maxSide` to shrink large frames (default 1280 px), `pauseAfterCodeMs` after a code was found (default 500).
+- Options: `formats` (default QR code and Data Matrix), `budgetMs` per frame (default 100), `maxSide` to shrink large frames (default 1280 px), `pauseAfterCodeMs` after a code was found (default 500).
 - The camera needs a secure page (HTTPS or localhost).
 
 ## Where the .wasm file comes from

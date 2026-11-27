@@ -11,6 +11,8 @@ export interface CameraScannerOptions {
   maxSide?: number;
   // Pause after a code was found, in milliseconds, so one code is not reported many times a second. Default 500.
   pauseAfterCodeMs?: number;
+  // The code formats to read. Default QR_CODE and DATA_MATRIX.
+  formats?: CodeFormat[];
 }
 
 export interface StartOptions {
@@ -26,7 +28,7 @@ export interface StartOptions {
 //   await scanner.start(video, {}, (code) => console.log(code.text), (error) => console.error(error));
 //   scanner.stop();
 export class CameraScanner {
-  private readonly options: Required<Omit<CameraScannerOptions, 'isValid'>> & Pick<CameraScannerOptions, 'isValid'>;
+  private readonly options: Required<Omit<CameraScannerOptions, 'isValid' | 'formats'>> & Pick<CameraScannerOptions, 'isValid' | 'formats'>;
   private stream: MediaStream | null = null;
   private video: HTMLVideoElement | null = null;
   private canvas: HTMLCanvasElement | null = null;
@@ -36,6 +38,7 @@ export class CameraScanner {
   constructor(options: CameraScannerOptions = {}) {
     this.options = {
       isValid: options.isValid,
+      formats: options.formats,
       budgetMs: options.budgetMs ?? 100,
       maxSide: options.maxSide ?? 1280,
       pauseAfterCodeMs: options.pauseAfterCodeMs ?? 500,
@@ -102,7 +105,7 @@ export class CameraScanner {
         continue;
       }
       try {
-        const out = await scan(frame.pixels, { mode: 'first', isValid: this.options.isValid, budgetMs: this.options.budgetMs });
+        const out = await scan(frame.pixels, { mode: 'first', isValid: this.options.isValid, budgetMs: this.options.budgetMs, formats: this.options.formats });
         if (run !== this.run) {
           return;
         }

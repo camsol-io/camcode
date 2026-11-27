@@ -103,3 +103,20 @@ export function paste(dst, src, left, top) {
   for (let y = 0; y < src.height; y++) dst.data.set(src.data.subarray(y * src.width, (y + 1) * src.width), (top + y) * dst.width + left);
   return dst;
 }
+
+// Draws any format zxing-cpp can write (barcodes too) with its top-left corner at (left, top), `scale` pixels per
+// module, by rendering a PNG with zxing-wasm's writer. Returns the box the symbol occupies.
+export async function drawBarcode(img, format, text, left, top, scale = 3) {
+  const { writeBarcode } = await import('zxing-wasm/writer');
+  const { PNG } = await import('pngjs');
+  const written = await writeBarcode(text, { format, scale });
+  if (written.error) throw new Error(written.error);
+  const png = PNG.sync.read(Buffer.from(await written.image.arrayBuffer()));
+  for (let y = 0; y < png.height; y++) {
+    for (let x = 0; x < png.width; x++) {
+      const i = (y * png.width + x) * 4;
+      img.data[(top + y) * img.width + left + x] = png.data[i + 3] === 0 ? 255 : png.data[i];
+    }
+  }
+  return { left, top, width: png.width, height: png.height };
+}
