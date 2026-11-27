@@ -80,3 +80,21 @@ test('finds no code in a page of printed text lines with every 1D format switche
   const linear = ALL_FORMATS.filter((f) => !['QR_CODE', 'DATA_MATRIX', 'AZTEC', 'PDF_417'].includes(f));
   assert.deepEqual((await scan(img, { mode: 'all', formats: linear })).results, []);
 });
+
+test('passes runs only the named stages: a diagonal barcode needs rotated-45', async () => {
+  const { PASSES } = await import('../dist/index.js');
+  assert.equal(PASSES[0], 'standard');
+  const img = blank(900, 900);
+  await drawBarcode(img, 'Code128', 'AB-12345', 250, 400, 3);
+  const turned = rotate(img, 45);
+  assert.deepEqual((await scan(turned, { formats: ['CODE_128'], passes: ['standard'] })).results, []);
+  const out = await scan(turned, { formats: ['CODE_128'], passes: ['rotated-45'] });
+  assert.deepEqual(out.results.map((r) => [r.text, r.pass]), [['AB-12345', 'rotated-45']]);
+});
+
+test('passes skips names it does not know and runs the rest in the given order', async () => {
+  const img = blank(600, 300);
+  drawQR(img, 'sample.io/pass01', 40, 40, 5);
+  const out = await scan(img, { passes: ['no-such-pass', 'standard'] });
+  assert.deepEqual(out.results.map((r) => r.text), ['sample.io/pass01']);
+});

@@ -10,7 +10,8 @@ export { grayFromRGBA } from './image.js';
 export { prepare } from './decode.js';
 export type { PrepareOptions } from './decode.js';
 export { CameraScanner } from './camera.js';
-export type { CameraScannerOptions, StartOptions } from './camera.js';
+export { DEFAULT_SCHEDULE } from './camera.js';
+export type { CameraScannerOptions, FrameInfo, StartOptions } from './camera.js';
 
 export interface ScanResult {
   text: string;
@@ -27,10 +28,17 @@ export interface ScanOptions {
   isValid?: (text: string, format: CodeFormat) => boolean;
   // no new pass starts after this many milliseconds; a pass that has started runs to its end
   budgetMs?: number;
+  // Run only these stages, in this order (see PASSES). 'standard' is the reduced view, the partner search and the
+  // full-size view. Without it every stage runs in the standard order, then the last resorts.
+  passes?: PassName[];
   // the code formats to read; default QR_CODE and DATA_MATRIX (DEFAULT_FORMATS). Every extra format costs time and
   // adds a chance of false reads, so list only what you expect.
   formats?: CodeFormat[];
 }
+
+// The stages of a scan, in their standard order.
+export const PASSES = ['standard', 'normalized', 'rotated-45', 'inverted', 'gamma', 'rotated-30', 'global-denoise', 'upscale-2', 'gamma-tiles', 'clahe', 'located', 'highlights', 'tiles-3'] as const;
+export type PassName = (typeof PASSES)[number];
 
 export interface ScanOutput {
   results: ScanResult[];
@@ -105,9 +113,11 @@ export async function scan(image: GrayImage, options: ScanOptions = {}): Promise
   const large = factor > 1;
   let reduced: GrayImage | null = null;
   const base = () => (reduced ??= large ? shrink(gray(), factor) : gray());
-  if (large) {
-    await read(scaled(base(), factor), 'reduced');
-  }
+  const reducedPass = async () => {
+    if (large) {
+      await read(scaled(base(), factor), 'reduced');
+    }
+  };
 
   // Partner: the other code of a tag next to a code that was read. An asset label often carries a QR code and a Data Matrix
   // code with the same text, within about one tag length of each other. A full-resolution window around the found
@@ -128,16 +138,20 @@ export async function scan(image: GrayImage, options: ScanOptions = {}): Promise
     }
   };
 
-  // 2. Partners of the codes found at reduced size.
-  await partners();
+  // 2. Partners of the codes found at reduced size (in the standard stage below).
 
   // 3. Full size: when nothing was found yet, or when a code still lacks its partner and is small enough that more
   // codes, or the partner itself, may only show at full resolution.
   const needFull = () => results.length === 0 || results.some((r) => !hasPartner(results, r) && longSide(r.points) < smallCode);
-  if (!done() && timeLeft() && (!large || needFull())) {
-    await read(whole(isRGBA(image) ? image : gray()), 'full');
+  // Steps 1 to 3 form the 'standard' stage.
+  const standard = async () => {
+    await reducedPass();
     await partners();
-  }
+    if (!done() && timeLeft() && (!large || needFull())) {
+      await read(whole(isRGBA(image) ? image : gray()), 'full');
+      await partners();
+    }
+  };
 
   // 4. Fallbacks, only when nothing was found, in the order they paid off on photos of asset labels: worn or unevenly lit
   // codes (local contrast), codes at angles the detectors miss, and light-on-dark codes.
@@ -147,15 +161,6 @@ export async function scan(image: GrayImage, options: ScanOptions = {}): Promise
     ['rotated-45', () => turned(base(), 45, factor), { binarizer: 'fixed' }],
     ['inverted', () => scaled(invert(base()), factor), {}],
   ];
-  for (const [pass, view, decodeOptions] of fallbacks) {
-    if (results.length > 0 || !timeLeft()) {
-      break;
-    }
-    const v = view();
-    if (v) {
-      await read(v, pass, decodeOptions);
-    }
-  }
 
   // 5. Extended passes, after the fallbacks and cheapest first. In 'first' mode they run only when nothing was found.
   // In 'all' mode they always run: on the benchmark photos the codes they find sit next to codes the earlier passes
@@ -267,12 +272,37 @@ export async function scan(image: GrayImage, options: ScanOptions = {}): Promise
       }
     }
   };
-  for (const [, pass] of extended) {
-    if ((mode === 'first' && results.length > 0) || !timeLeft()) {
+  // The stages in their standard order: standard, fallbacks, extended passes. `options.passes` runs only the stages
+  // it names, in its order (a camera can spread them over frames); without it every stage runs, then the last resorts.
+  const stages = new Map<PassName, () => Promise<void>>([
+    ['standard', standard],
+    ...fallbacks.map(([pass, view, decodeOptions]): [PassName, () => Promise<void>] => [pass as PassName, async () => {
+      if (results.length > 0) {
+        return; // fallbacks only when nothing was found
+      }
+      const v = view();
+      if (v) {
+        await read(v, pass, decodeOptions);
+      }
+    }]),
+    ...extended.map(([pass, run]): [PassName, () => Promise<void>] => [pass as PassName, async () => {
+      if (mode === 'first' && results.length > 0) {
+        return;
+      }
+      await run();
+    }]),
+  ]);
+  for (const name of options.passes ?? stages.keys()) {
+    const stage = stages.get(name);
+    if (!stage) {
+      continue;
+    }
+    if (done() || !timeLeft()) {
       break;
     }
-    await pass();
+    await stage();
   }
+  const lastResortsToo = !options.passes;
   // 6. Last resorts, only when every pass found nothing. They read codes no pass reads, so they come after all passes:
   // placed earlier, they cost their time on images a later pass reads anyway.
   const lastResorts: [string, () => View | null, DecodeOptions][] = [
@@ -287,7 +317,7 @@ export async function scan(image: GrayImage, options: ScanOptions = {}): Promise
     ['pure', () => (Math.max(image.width, image.height) > 1000 ? null : whole(gray())), { pure: true }],
   ];
   for (const [pass, view, decodeOptions] of lastResorts) {
-    if (results.length > 0 || !timeLeft()) {
+    if (!lastResortsToo || results.length > 0 || !timeLeft()) {
       break;
     }
     const v = view();
@@ -299,7 +329,7 @@ export async function scan(image: GrayImage, options: ScanOptions = {}): Promise
   // 7. Grid repair, the last resort when every pass found nothing: QR codes whose finder patterns zxing-cpp cannot
   // use (spread ink, a printed line or a bridge on a finder) although the data is within error correction. Own
   // tolerant finder search on the reduced view, grid fit, function patterns reset, clean redraw for zxing-cpp.
-  if (qr && results.length === 0 && timeLeft()) {
+  if (lastResortsToo && qr && results.length === 0 && timeLeft()) {
     const found = await gridRepair(base());
     if (found && isValid(found.text, 'QR_CODE')) {
       results.push({ text: found.text, format: 'QR_CODE', points: found.points.map((p) => ({ x: p.x * factor, y: p.y * factor })), pass: 'grid-repair', elapsedMs: elapsed() });
@@ -310,7 +340,7 @@ export async function scan(image: GrayImage, options: ScanOptions = {}): Promise
   // patterns are broken by a printed defect (the public set's synthetic "pathological" codes). Pixel-scale morphology
   // only makes sense on a two-tone image (a rendered or cleanly scanned code), so it runs only when under 10% of the
   // reduced view's pixels are mid-tones (41 to 214); photos have 28% or more. Otsu-binarized reduced view.
-  if (results.length === 0 && timeLeft() && midTones(base()) < 0.1) {
+  if (lastResortsToo && results.length === 0 && timeLeft() && midTones(base()) < 0.1) {
     const b = base();
     const views: [string, () => GrayImage][] = [
       // holes in finder centres closed: thin dark lines opened away first (3 x 3 square), then enclosed white

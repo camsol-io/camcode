@@ -29,6 +29,7 @@ for (const code of out.results) {
 - `mode`: `'first'` (default) stops at the first valid code. `'all'` looks for every code in the image.
 - `isValid(text, format)`: skip codes that fail your check, for example a URL pattern.
 - `formats`: the code formats to read (see below). Default `['QR_CODE', 'DATA_MATRIX']`.
+- `passes`: run only these stages, in this order (names in `PASSES`: `standard` is the reduced view, the partner search and the full-size view; then `normalized`, `rotated-45`, `inverted`, `gamma`, `rotated-30` and the more expensive ones). Without it every stage runs in that order.
 - `budgetMs`: no new pass starts after this many milliseconds. Without it, an image without a readable code runs every pass, which can take a second or more on a large photo.
 
 ## Formats
@@ -74,6 +75,8 @@ scanner.stop();
 - `CameraScanner.listCameras()` lists the cameras. Browsers fill in the labels only after the user has allowed camera access once.
 - Options: `formats` (default QR code and Data Matrix), `budgetMs` per frame (default 100), `maxSide` to shrink large frames (default 1280 px), `pauseAfterCodeMs` after a code was found (default 500).
 - 1D barcodes are reported only after the same text was read in 2 frames within 1.5 s (`confirmBarcodeFrames`, `confirmWindowMs`). Their checksum is weak, and a single blurred frame can give a wrong text. 2D codes carry error correction and are reported at once.
+- The scan stages are spread over frames (`schedule`, default `DEFAULT_SCHEDULE`): the standard stage every second frame, in between in turn the diagonal stages (`rotated-45`, `rotated-30`) and the contrast stages. Neighbouring frames show nearly the same picture, so each frame stays short and every stage gets its turn within a few frames. A barcode waiting for confirmation gets the stage that found it again in the next frame.
+- `onFrame(info)` is called after every frame with its size, `grabMs`, `scanMs`, the stages used and whether a code was found, for example to show the frame rate.
 - The camera is asked for 1920 × 1080 (it gives its nearest size) and, where the browser allows it, for continuous autofocus. `scanner.track` gives the video track, for example to read its settings.
 - Small codes need pixels: a barcode needs at least about 2 pixels per bar width in the scanned frame, a QR code about 3 pixels per module. Hold the code close, or raise `maxSide` to 1920 for barcodes.
 - The camera needs a secure page (HTTPS or localhost).

@@ -1,4 +1,4 @@
-import { scan, type ScanResult } from './index.js';
+import { PASSES, scan, type PassName, type ScanResult } from './index.js';
 import type { CodeFormat } from './decode.js';
 
 export interface CameraScannerOptions {
@@ -19,7 +19,46 @@ export interface CameraScannerOptions {
   confirmBarcodeFrames?: number;
   // See confirmBarcodeFrames. Default 1500.
   confirmWindowMs?: number;
+  // The scan stages per frame, used in turn (one entry per frame). Neighbouring frames show nearly the same picture,
+  // so the stages are spread over frames instead of running all of them on every frame: each frame stays short, and
+  // every stage gets its turn within a few frames. Default DEFAULT_SCHEDULE.
+  schedule?: PassName[][];
+  // Called after every scanned frame, for example to show the frame rate.
+  onFrame?: (frame: FrameInfo) => void;
 }
+
+export interface FrameInfo {
+  // the frame as scanned, in pixels
+  width: number;
+  height: number;
+  // copying the video frame into a canvas and reading its pixels
+  grabMs: number;
+  scanMs: number;
+  passes: PassName[];
+  found: boolean;
+}
+
+// The standard stage every second frame. In between, in turn, the stages that read codes the standard stage misses
+// in camera frames: diagonal codes (rotated-45, rotated-30) most often, since a hand-held code is often turned, then
+// low contrast, dark codes and light-on-dark codes.
+export const DEFAULT_SCHEDULE: PassName[][] = [
+  ['standard'],
+  ['rotated-45'],
+  ['standard'],
+  ['rotated-30'],
+  ['standard'],
+  ['normalized'],
+  ['standard'],
+  ['rotated-45'],
+  ['standard'],
+  ['rotated-30'],
+  ['standard'],
+  ['gamma'],
+  ['standard'],
+  ['rotated-45'],
+  ['standard'],
+  ['inverted'],
+];
 
 const MATRIX_FORMATS: CodeFormat[] = ['QR_CODE', 'DATA_MATRIX', 'AZTEC', 'PDF_417'];
 
@@ -36,7 +75,7 @@ export interface StartOptions {
 //   await scanner.start(video, {}, (code) => console.log(code.text), (error) => console.error(error));
 //   scanner.stop();
 export class CameraScanner {
-  private readonly options: Required<Omit<CameraScannerOptions, 'isValid' | 'formats'>> & Pick<CameraScannerOptions, 'isValid' | 'formats'>;
+  private readonly options: Required<Omit<CameraScannerOptions, 'isValid' | 'formats' | 'onFrame'>> & Pick<CameraScannerOptions, 'isValid' | 'formats' | 'onFrame'>;
   private stream: MediaStream | null = null;
   private video: HTMLVideoElement | null = null;
   private canvas: HTMLCanvasElement | null = null;
@@ -52,6 +91,8 @@ export class CameraScanner {
       pauseAfterCodeMs: options.pauseAfterCodeMs ?? 500,
       confirmBarcodeFrames: Math.max(1, options.confirmBarcodeFrames ?? 2),
       confirmWindowMs: options.confirmWindowMs ?? 1500,
+      schedule: options.schedule?.length ? options.schedule : DEFAULT_SCHEDULE,
+      onFrame: options.onFrame,
     };
   }
 
@@ -117,23 +158,31 @@ export class CameraScanner {
   }
 
   private async loop(run: number, onCode: (result: ScanResult) => void, onError: (error: unknown) => void): Promise<void> {
-    let pending: { key: string; count: number; at: number } | null = null;
+    let pending: { key: string; count: number; at: number; stage: PassName } | null = null;
+    let turn = 0;
     while (run === this.run) {
+      const grabStart = performance.now();
       const frame = this.grab();
+      const grabMs = performance.now() - grabStart;
       if (!frame) {
         await nextFrame();
         continue;
       }
       try {
-        const out = await scan(frame.pixels, { mode: 'first', isValid: this.options.isValid, budgetMs: this.options.budgetMs, formats: this.options.formats });
+        // A barcode waiting for confirmation: repeat the stage that read it, so the next frame can confirm it at once.
+        const confirming = pending && Date.now() - pending.at <= this.options.confirmWindowMs;
+        const passes = confirming && pending ? [pending.stage] : this.options.schedule[turn++ % this.options.schedule.length];
+        const out = await scan(frame.pixels, { mode: 'first', isValid: this.options.isValid, budgetMs: this.options.budgetMs, formats: this.options.formats, passes });
         if (run !== this.run) {
           return;
         }
         const found = out.results[0];
+        this.options.onFrame?.({ width: frame.pixels.width, height: frame.pixels.height, grabMs, scanMs: out.elapsedMs, passes, found: !!found });
         if (found && !MATRIX_FORMATS.includes(found.format) && this.options.confirmBarcodeFrames > 1) {
           const key = `${found.format} ${found.text}`;
           const now = Date.now();
-          pending = pending && pending.key === key && now - pending.at <= this.options.confirmWindowMs ? { key, count: pending.count + 1, at: now } : { key, count: 1, at: now };
+          const stage = stageOf(found.pass);
+          pending = pending && pending.key === key && now - pending.at <= this.options.confirmWindowMs ? { key, count: pending.count + 1, at: now, stage } : { key, count: 1, at: now, stage };
           if (pending.count < this.options.confirmBarcodeFrames) {
             await nextFrame();
             continue;
@@ -175,6 +224,11 @@ export class CameraScanner {
     const { data } = context.getImageData(0, 0, width, height);
     return { pixels: { data, width, height }, scale };
   }
+}
+
+// The stage a result's pass belongs to: the reduced view, the partner search and the full-size view are 'standard'.
+function stageOf(pass: string): PassName {
+  return (PASSES as readonly string[]).includes(pass) ? (pass as PassName) : 'standard';
 }
 
 // Asks the camera to keep refocusing, where the browser and camera allow it (Chrome on Android and many webcams).
