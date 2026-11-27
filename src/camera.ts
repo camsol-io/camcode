@@ -13,7 +13,15 @@ export interface CameraScannerOptions {
   pauseAfterCodeMs?: number;
   // The code formats to read. Default QR_CODE and DATA_MATRIX.
   formats?: CodeFormat[];
+  // A 1D barcode is reported only after the same text was read in this many frames within confirmWindowMs.
+  // 1D barcodes have only a weak checksum, so a single blurred frame can give a wrong text. QR codes, Data Matrix,
+  // Aztec and PDF417 carry error correction and are reported at once. Default 2; 1 turns the check off.
+  confirmBarcodeFrames?: number;
+  // See confirmBarcodeFrames. Default 1500.
+  confirmWindowMs?: number;
 }
+
+const MATRIX_FORMATS: CodeFormat[] = ['QR_CODE', 'DATA_MATRIX', 'AZTEC', 'PDF_417'];
 
 export interface StartOptions {
   // A camera from listCameras(). Without it the back camera is asked for (facingMode "environment").
@@ -22,7 +30,7 @@ export interface StartOptions {
   constraints?: MediaStreamConstraints;
 }
 
-// Reads QR and Data Matrix codes from a camera stream shown in a <video> element.
+// Reads codes from a camera stream shown in a <video> element: QR and Data Matrix by default, other formats on request.
 //
 //   const scanner = new CameraScanner({ isValid: (t) => t.startsWith('https://example.com/') });
 //   await scanner.start(video, {}, (code) => console.log(code.text), (error) => console.error(error));
@@ -42,6 +50,8 @@ export class CameraScanner {
       budgetMs: options.budgetMs ?? 100,
       maxSide: options.maxSide ?? 1280,
       pauseAfterCodeMs: options.pauseAfterCodeMs ?? 500,
+      confirmBarcodeFrames: Math.max(1, options.confirmBarcodeFrames ?? 2),
+      confirmWindowMs: options.confirmWindowMs ?? 1500,
     };
   }
 
@@ -55,6 +65,11 @@ export class CameraScanner {
     return this.stream !== null;
   }
 
+  // The camera's video track while running, for example to read its settings or switch on the torch.
+  get track(): MediaStreamTrack | null {
+    return this.stream?.getVideoTracks()[0] ?? null;
+  }
+
   // Opens the camera, shows it in `video` and scans its frames until stop() is called.
   // `onCode` gets each code found; `onError` gets errors from scanning a frame (the loop keeps going).
   // Throws when the camera cannot be opened (no permission, no camera).
@@ -66,8 +81,11 @@ export class CameraScanner {
   ): Promise<void> {
     this.stop();
     const run = ++this.run;
+    // 1920 x 1080 as a wish, not a must: more pixels per bar and module for small codes; cameras that cannot do it
+    // give their nearest size.
+    const size = { width: { ideal: 1920 }, height: { ideal: 1080 } };
     const constraints: MediaStreamConstraints = startOptions.constraints ?? {
-      video: startOptions.deviceId ? { deviceId: { exact: startOptions.deviceId } } : { facingMode: 'environment' },
+      video: startOptions.deviceId ? { deviceId: { exact: startOptions.deviceId }, ...size } : { facingMode: 'environment', ...size },
       audio: false,
     };
     const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -77,6 +95,7 @@ export class CameraScanner {
       return;
     }
     this.stream = stream;
+    await continuousFocus(stream.getVideoTracks()[0]);
     this.video = video;
     video.srcObject = stream;
     video.setAttribute('playsinline', 'true'); // iOS: play inline instead of fullscreen
@@ -98,6 +117,7 @@ export class CameraScanner {
   }
 
   private async loop(run: number, onCode: (result: ScanResult) => void, onError: (error: unknown) => void): Promise<void> {
+    let pending: { key: string; count: number; at: number } | null = null;
     while (run === this.run) {
       const frame = this.grab();
       if (!frame) {
@@ -110,6 +130,16 @@ export class CameraScanner {
           return;
         }
         const found = out.results[0];
+        if (found && !MATRIX_FORMATS.includes(found.format) && this.options.confirmBarcodeFrames > 1) {
+          const key = `${found.format} ${found.text}`;
+          const now = Date.now();
+          pending = pending && pending.key === key && now - pending.at <= this.options.confirmWindowMs ? { key, count: pending.count + 1, at: now } : { key, count: 1, at: now };
+          if (pending.count < this.options.confirmBarcodeFrames) {
+            await nextFrame();
+            continue;
+          }
+          pending = null;
+        }
         if (found) {
           const points = found.points.map((p) => ({ x: p.x / frame.scale, y: p.y / frame.scale }));
           onCode({ ...found, points });
@@ -144,6 +174,19 @@ export class CameraScanner {
     context.drawImage(video, 0, 0, width, height);
     const { data } = context.getImageData(0, 0, width, height);
     return { pixels: { data, width, height }, scale };
+  }
+}
+
+// Asks the camera to keep refocusing, where the browser and camera allow it (Chrome on Android and many webcams).
+// Without it some cameras keep the focus they had at start, and close codes stay blurred.
+async function continuousFocus(track: MediaStreamTrack | undefined): Promise<void> {
+  try {
+    const capabilities = (track?.getCapabilities?.() ?? {}) as { focusMode?: string[] };
+    if (track && capabilities.focusMode?.includes('continuous')) {
+      await track.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] });
+    }
+  } catch {
+    // not supported here: keep the camera's own focus behaviour
   }
 }
 

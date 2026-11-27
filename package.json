@@ -1,6 +1,6 @@
 {
   "name": "@camsol.io/camcode",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Fast QR code, Data Matrix and barcode reader for the browser and Node, built on zxing-cpp (WebAssembly), with a camera scanner",
   "keywords": [
     "qr",

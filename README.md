@@ -73,6 +73,9 @@ scanner.stop();
 - `start` opens the back camera (`facingMode: 'environment'`) unless you pass a `deviceId` or full `constraints`. It throws when the camera cannot be opened.
 - `CameraScanner.listCameras()` lists the cameras. Browsers fill in the labels only after the user has allowed camera access once.
 - Options: `formats` (default QR code and Data Matrix), `budgetMs` per frame (default 100), `maxSide` to shrink large frames (default 1280 px), `pauseAfterCodeMs` after a code was found (default 500).
+- 1D barcodes are reported only after the same text was read in 2 frames within 1.5 s (`confirmBarcodeFrames`, `confirmWindowMs`). Their checksum is weak, and a single blurred frame can give a wrong text. 2D codes carry error correction and are reported at once.
+- The camera is asked for 1920 × 1080 (it gives its nearest size) and, where the browser allows it, for continuous autofocus. `scanner.track` gives the video track, for example to read its settings.
+- Small codes need pixels: a barcode needs at least about 2 pixels per bar width in the scanned frame, a QR code about 3 pixels per module. Hold the code close, or raise `maxSide` to 1920 for barcodes.
 - The camera needs a secure page (HTTPS or localhost).
 
 ## Where the .wasm file comes from
