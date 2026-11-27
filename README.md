@@ -1,0 +1,77 @@
+# @camsol.io/camcode
+
+Reads QR codes and Data Matrix codes from photos and camera streams, in the browser and in Node.
+
+camcode uses [zxing-cpp](https://github.com/zxing-cpp/zxing-cpp) through [zxing-wasm](https://github.com/Sec-ant/zxing-wasm) for decoding. Around it, camcode decides which views of the image to decode and in which order: first a small view, then the full image, then views for hard cases (blur, glare, low contrast, damaged finder patterns, odd angles). It stops as soon as it has what you asked for.
+
+```bash
+npm install @camsol.io/camcode
+```
+
+## Scan an image
+
+```js
+import { scan, prepare } from '@camsol.io/camcode';
+
+await prepare(); // optional: loads the WebAssembly module before the first scan
+
+const { data, width, height } = context.getImageData(0, 0, canvas.width, canvas.height);
+const out = await scan({ data, width, height }, { mode: 'first' });
+
+for (const code of out.results) {
+  console.log(code.format, code.text); // 'QR_CODE' | 'DATA_MATRIX', the decoded text
+}
+```
+
+`scan(image, options)` returns a promise of `{ results, elapsedMs }`.
+
+- `image` is `{ data, width, height }`. `data` holds 4 bytes per pixel (RGBA, as `getImageData` returns it) or 1 byte per pixel (gray). The image is not changed.
+- `mode`: `'first'` (default) stops at the first valid code. `'all'` looks for every code in the image.
+- `isValid(text, format)`: skip codes that fail your check, for example a URL pattern.
+- `budgetMs`: no new pass starts after this many milliseconds. Without it, an image without a readable code runs every pass, which can take a second or more on a large photo.
+
+Each result has `text`, `format`, `points` (the four corners: top-left, top-right, bottom-right, bottom-left, in image pixels), `pass` (which view found it) and `elapsedMs` (time from the start of the scan until it was found).
+
+## Scan from a camera
+
+```js
+import { CameraScanner, prepare } from '@camsol.io/camcode';
+
+await prepare({ wasmUrl: '/static/zxing_reader.wasm' });
+
+const scanner = new CameraScanner({ isValid: (text) => text.startsWith('https://') });
+await scanner.start(
+  document.querySelector('video'),
+  {},                                // or { deviceId } from CameraScanner.listCameras()
+  (code) => console.log(code.text),  // called for each code found
+  (error) => console.error(error),   // errors while scanning a frame; the loop keeps going
+);
+
+// later
+scanner.stop();
+```
+
+- `start` opens the back camera (`facingMode: 'environment'`) unless you pass a `deviceId` or full `constraints`. It throws when the camera cannot be opened.
+- `CameraScanner.listCameras()` lists the cameras. Browsers fill in the labels only after the user has allowed camera access once.
+- Options: `budgetMs` per frame (default 100), `maxSide` to shrink large frames (default 1280 px), `pauseAfterCodeMs` after a code was found (default 500).
+- The camera needs a secure page (HTTPS or localhost).
+
+## Where the .wasm file comes from
+
+zxing-wasm needs its WebAssembly file (`zxing_reader.wasm`, about 1 MB).
+
+- **Browser:** by default zxing-wasm fetches it from the jsDelivr CDN. To serve it yourself, copy `node_modules/zxing-wasm/dist/reader/zxing_reader.wasm` into your static files and call `prepare({ wasmUrl: '<its URL>' })` before the first scan. With a bundler, a copy step does this. For Vite: `import wasmUrl from 'zxing-wasm/reader/zxing_reader.wasm?url'`.
+- **Node:** nothing to do. zxing-wasm loads the file from `node_modules`.
+
+## Development
+
+```bash
+npm install
+npm test
+```
+
+`npm test` builds `dist/` and runs the tests in `test/`. Most test images are drawn with ZXing's own encoders. Six tests use images from the public Barcode Reading Benchmark dataset, whose license is not stated. Those images are not in this repository, so the six tests are skipped (see `test/fixtures/README.md`).
+
+## License
+
+MIT, Camsol Services GmbH. zxing-wasm is MIT, zxing-cpp is Apache-2.0.

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.tgz
+.DS_Store
+.env*
+*.log
+.claude/
+
+# test images from the public Barcode Reading Benchmark dataset: license not stated, keep them local
+test/fixtures/*.png
+
+# internal notes for Claude, not part of the public repo
+CLAUDE.md
